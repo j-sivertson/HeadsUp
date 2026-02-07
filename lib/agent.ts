@@ -2,18 +2,19 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { searchPerson, PersonQuery, SearchResult } from "@/lib/tavily";
-// Your teammate implements this
 import { sendSMS } from "./surge";
+import { initDb, getConversation, saveConversation, deleteConversation } from "./db";
 
 const client = new Anthropic();
 
-// Store conversation state per phone number
-interface ConversationState {
-    messages: Anthropic.MessageParam[];
-    personInfo: Partial<PersonQuery>;
+// Initialize database on first load
+let dbInitialized = false;
+async function ensureDbInitialized(): Promise<void> {
+    if (!dbInitialized) {
+        await initDb();
+        dbInitialized = true;
+    }
 }
-
-const conversations = new Map<string, ConversationState>();
 
 // Tool definition for Claude
 const tools: Anthropic.Tool[] = [
@@ -70,15 +71,16 @@ function formatSearchResults(results: SearchResult[]): string {
 
 export async function receiveMessage(phoneNumber: string, msg: string): Promise<void> {
     try {
-        // Get or create conversation state
-        let state = conversations.get(phoneNumber);
-        if (!state) {
-            state = { messages: [], personInfo: {} };
-            conversations.set(phoneNumber, state);
-        }
+        // Ensure database is initialized
+        await ensureDbInitialized();
+
+        // Get or create conversation state from database
+        const existingConvo = await getConversation(phoneNumber);
+        const messages: Anthropic.MessageParam[] = existingConvo?.messages || [];
+        const personInfo: Partial<PersonQuery> = existingConvo?.person_info || {};
 
         // Add user message to history
-        state.messages.push({ role: "user", content: msg });
+        messages.push({ role: "user", content: msg });
 
         // Agentic loop
         let continueLoop = true;
@@ -89,7 +91,7 @@ export async function receiveMessage(phoneNumber: string, msg: string): Promise<
                 max_tokens: 1024,
                 system: SYSTEM_PROMPT,
                 tools,
-                messages: state.messages,
+                messages,
             });
 
             // Check if Claude wants to use a tool
@@ -99,7 +101,7 @@ export async function receiveMessage(phoneNumber: string, msg: string): Promise<
                 );
 
                 // Add Claude's response to messages
-                state.messages.push({ role: "assistant", content: response.content });
+                messages.push({ role: "assistant", content: response.content });
 
                 // Process each tool call
                 const toolResults: Anthropic.ToolResultBlockParam[] = [];
@@ -133,7 +135,10 @@ export async function receiveMessage(phoneNumber: string, msg: string): Promise<
                 }
 
                 // Add tool results to messages
-                state.messages.push({ role: "user", content: toolResults });
+                messages.push({ role: "user", content: toolResults });
+
+                // Save progress to database
+                await saveConversation(phoneNumber, messages, personInfo);
 
             } else {
                 // Claude gave a final text response
@@ -145,7 +150,10 @@ export async function receiveMessage(phoneNumber: string, msg: string): Promise<
                     .join("\n");
 
                 // Add assistant response to history
-                state.messages.push({ role: "assistant", content: response.content });
+                messages.push({ role: "assistant", content: response.content });
+
+                // Save final state to database
+                await saveConversation(phoneNumber, messages, personInfo);
 
                 // Send the response to the user
                 await sendSMS(phoneNumber, responseText);
@@ -158,6 +166,7 @@ export async function receiveMessage(phoneNumber: string, msg: string): Promise<
 }
 
 // Clear conversation history for a phone number (useful for "start over")
-export function clearConversation(phoneNumber: string): void {
-    conversations.delete(phoneNumber);
+export async function clearConversation(phoneNumber: string): Promise<void> {
+    await ensureDbInitialized();
+    await deleteConversation(phoneNumber);
 }
