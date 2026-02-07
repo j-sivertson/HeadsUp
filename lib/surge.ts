@@ -1,8 +1,14 @@
 import Surge from "@surgeapi/node";
 
-const surgeClient = new Surge({
-  apiKey: process.env.SURGE_API_KEY!,
-});
+// Lazy singleton — only initialized at runtime when env vars are available
+let _client: Surge | null = null;
+
+function getClient(): Surge {
+  if (!_client) {
+    _client = new Surge({ apiKey: process.env.SURGE_API_KEY! });
+  }
+  return _client;
+}
 
 /**
  * Send an SMS reply to a contact via Surge.
@@ -24,7 +30,7 @@ export async function sendSMS(
   const chunks = splitMessage(body, MAX_SMS_LENGTH);
 
   for (const chunk of chunks) {
-    await surgeClient.messages.create(accountId, {
+    await getClient().messages.create(accountId, {
       body: chunk,
       conversation: {
         contact: {
@@ -72,5 +78,3 @@ function splitMessage(text: string, maxLength: number): string[] {
 
   return chunks;
 }
-
-export { surgeClient };

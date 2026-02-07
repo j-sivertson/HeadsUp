@@ -1,6 +1,14 @@
-import { tavily } from "@tavily/core";
+import { tavily, TavilyClient } from "@tavily/core";
 
-const tavilyClient = tavily({ apiKey: process.env.TAVILY_API_KEY! });
+// Lazy singleton — only initialized at runtime when env vars are available
+let _client: TavilyClient | null = null;
+
+function getClient(): TavilyClient {
+  if (!_client) {
+    _client = tavily({ apiKey: process.env.TAVILY_API_KEY! });
+  }
+  return _client;
+}
 
 export interface PersonQuery {
   name: string;
@@ -24,7 +32,7 @@ export interface SearchResult {
 export async function searchPerson(person: PersonQuery): Promise<SearchResult[]> {
   const query = buildSearchQuery(person);
 
-  const response = await tavilyClient.search(query, {
+  const response = await getClient().search(query, {
     maxResults: 10,
     searchDepth: "advanced",
     includeAnswer: true,
@@ -67,7 +75,7 @@ function buildSearchQuery(person: PersonQuery): string {
  */
 export async function extractFromUrl(url: string): Promise<string> {
   try {
-    const response = await tavilyClient.extract([url]);
+    const response = await getClient().extract([url]);
     if (response.results && response.results.length > 0) {
       return response.results.map((r) => r.rawContent).join("\n\n");
     }
@@ -77,5 +85,3 @@ export async function extractFromUrl(url: string): Promise<string> {
     return "";
   }
 }
-
-export { tavilyClient };

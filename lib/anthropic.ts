@@ -1,9 +1,15 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { PersonQuery, SearchResult } from "./tavily";
 
-const anthropicClient = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY!,
-});
+// Lazy singleton — only initialized at runtime when env vars are available
+let _client: Anthropic | null = null;
+
+function getClient(): Anthropic {
+  if (!_client) {
+    _client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
+  }
+  return _client;
+}
 
 const MODEL = "claude-sonnet-4-20250514";
 
@@ -77,7 +83,7 @@ export async function parseIntent(
     { role: "user" as const, content: currentMessage },
   ];
 
-  const response = await anthropicClient.messages.create({
+  const response = await getClient().messages.create({
     model: MODEL,
     max_tokens: 1024,
     system: PARSE_INTENT_SYSTEM,
@@ -149,7 +155,7 @@ export async function generateReport(
     .filter(Boolean)
     .join("\n");
 
-  const response = await anthropicClient.messages.create({
+  const response = await getClient().messages.create({
     model: MODEL,
     max_tokens: 2048,
     system: GENERATE_REPORT_SYSTEM,
@@ -165,5 +171,3 @@ export async function generateReport(
     ? response.content[0].text
     : "Sorry, I was unable to generate a report at this time.";
 }
-
-export { anthropicClient };
