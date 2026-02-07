@@ -27,8 +27,38 @@ interface ConversationState {
 // Tool definition for Claude
 const tools: Anthropic.Tool[] = [
   {
+    name: "gather_person_info",
+    description: "Validate and structure the person details collected so far before searching. Call this BEFORE search_person to confirm you have enough information for an effective web search. Returns a readiness assessment and identifies any missing fields that would improve search quality.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        name: {
+          type: "string",
+          description: "The person's full name (required)"
+        },
+        company: {
+          type: "string",
+          description: "The company they work for (if known)"
+        },
+        role: {
+          type: "string",
+          description: "Their job title or role (if known)"
+        },
+        location: {
+          type: "string",
+          description: "Their location - city, state, or country (if known)"
+        },
+        additional_context: {
+          type: "string",
+          description: "Any other details the user shared (e.g. 'met at a conference', 'friend of a friend', industry)"
+        }
+      },
+      required: ["name"]
+    }
+  },
+  {
     name: "search_person",
-    description: "Search the web for information about a person, including their professional background, company, recent news, and social profiles.",
+    description: "Search the web for information about a person, including their professional background, company, recent news, and social profiles. Only call this AFTER using gather_person_info to confirm you have enough details.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -68,15 +98,86 @@ const tools: Anthropic.Tool[] = [
   }
 ];
 
+// ─── gather_person_info logic ─────────────────────────────────────────────────
+
+interface GatherPersonInfoInput {
+  name: string;
+  company?: string;
+  role?: string;
+  location?: string;
+  linkedin_url?: string;
+  additional_context?: string;
+}
+
+interface GatherPersonInfoResult {
+  ready_to_search: boolean;
+  person: GatherPersonInfoInput;
+  quality_score: "high" | "medium" | "low";
+  missing_fields: string[];
+  suggestion: string;
+}
+
+function evaluatePersonInfo(input: GatherPersonInfoInput): GatherPersonInfoResult {
+  const missing: string[] = [];
+  let qualifierCount = 0;
+
+  // Check which optional fields are present
+  if (input.company) qualifierCount++;
+  else missing.push("company");
+
+  if (input.role) qualifierCount++;
+  else missing.push("role");
+
+  if (input.location) qualifierCount++;
+  else missing.push("location");
+
+  if (input.linkedin_url) qualifierCount++;
+  if (input.additional_context) qualifierCount++;
+
+  // Determine quality and readiness
+  let quality: "high" | "medium" | "low";
+  let ready: boolean;
+  let suggestion: string;
+
+  if (qualifierCount >= 2) {
+    quality = "high";
+    ready = true;
+    suggestion = "Good to search. You have enough details for a targeted lookup.";
+  } else if (qualifierCount === 1) {
+    quality = "medium";
+    ready = true;
+    suggestion = `Searchable, but results would improve with more details. Missing: ${missing.slice(0, 2).join(", ")}. Consider asking the user if they know any of these.`;
+  } else {
+    quality = "low";
+    ready = false;
+    suggestion = `Not enough info for a useful search. A name alone is too ambiguous. Ask the user for at least one of: ${missing.join(", ")}.`;
+  }
+
+  console.log(`[gather_person_info] Name: ${input.name}, Qualifiers: ${qualifierCount}, Quality: ${quality}, Ready: ${ready}`);
+
+  return {
+    ready_to_search: ready,
+    person: input,
+    quality_score: quality,
+    missing_fields: missing,
+    suggestion,
+  };
+}
+
 const SYSTEM_PROMPT = `You are a pre-meeting research assistant that helps users prepare for business meetings via SMS.
 
-When the user provides information about someone they're meeting:
+When the user provides information about someone they're meeting, follow this workflow:
 
-1. If they only provide a name with no other context, ask if they know the company, job title, or location. Keep it brief - this is SMS.
+1. GATHER INFO: Always call gather_person_info first with whatever details you have. This validates whether you have enough to search effectively.
 
-2. If they provide enough details (name + company or other info), OR if they say they don't have more info, use the search_person tool to research them.
+2. CHECK READINESS:
+   - If gather_person_info says ready_to_search is false, use send_message to ask the user for the missing details. Keep it brief - this is SMS.
+   - If gather_person_info says ready_to_search is true but quality is "medium", you may either search now or ask one quick follow-up to improve results. Use your judgment.
+   - If quality is "high", proceed to search immediately.
 
-3. After gathering information, compile a concise meeting prep report that includes:
+3. SEARCH: Call search_person with the gathered details.
+
+4. REPORT: After getting search results, compile a concise meeting prep report that includes:
    - Professional background summary
    - Current role and company overview
    - Recent news or notable achievements
@@ -234,7 +335,29 @@ export async function receiveMessage(
           console.log("[receiveMessage] Processing tool:", toolUse.name, "id:", toolUse.id);
           console.log("[receiveMessage] Tool input:", JSON.stringify(toolUse.input));
 
-          if (toolUse.name === "search_person") {
+          if (toolUse.name === "gather_person_info") {
+            const input = toolUse.input as GatherPersonInfoInput;
+
+            console.log("[receiveMessage] Evaluating person info...");
+            const result = evaluatePersonInfo(input);
+            console.log("[receiveMessage] gather_person_info result:", JSON.stringify(result));
+
+            // Store the gathered person info in conversation state
+            state.personInfo = {
+              name: input.name,
+              company: input.company,
+              role: input.role,
+              location: input.location,
+              linkedinUrl: input.linkedin_url,
+              additionalContext: input.additional_context,
+            };
+
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: toolUse.id,
+              content: JSON.stringify(result)
+            });
+          } else if (toolUse.name === "search_person") {
             const input = toolUse.input as PersonQuery;
 
             try {
