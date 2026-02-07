@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { searchPerson, PersonQuery, SearchResult } from "./tavily.ts";
-import { getConversation, saveConversation, startNewSession, ConversationData } from "./db.ts";
+import { getConversation, saveConversation, startNewSession, acquireProcessingLock, releaseProcessingLock, ConversationData } from "./db.ts";
 
 // Lazy singleton for Anthropic client
 let _client: Anthropic | null = null;
@@ -81,20 +81,6 @@ const tools: Anthropic.Tool[] = [
       },
       required: ["name"]
     }
-  },
-  {
-    name: "send_message",
-    description: "Send an SMS message to the user. Use this to provide updates, ask follow-up questions, or deliver information to the user during the conversation.",
-    input_schema: {
-      type: "object" as const,
-      properties: {
-        message: {
-          type: "string",
-          description: "The message text to send to the user"
-        }
-      },
-      required: ["message"]
-    }
   }
 ];
 
@@ -171,7 +157,7 @@ When the user provides information about someone they're meeting, follow this wo
 1. GATHER INFO: Always call gather_person_info first with whatever details you have. This validates whether you have enough to search effectively.
 
 2. CHECK READINESS:
-   - If gather_person_info says ready_to_search is false, use send_message to ask the user for the missing details. Keep it brief - this is SMS.
+   - If gather_person_info says ready_to_search is false, respond with a brief text asking the user for the missing details. Keep it brief - this is SMS.
    - If gather_person_info says ready_to_search is true but quality is "medium", you may either search now or ask one quick follow-up to improve results. Use your judgment.
    - If quality is "high", proceed to search immediately.
 
@@ -265,6 +251,14 @@ export async function receiveMessage(
   sendSMS: SendSMSFunction
 ): Promise<void> {
   console.log("[receiveMessage] START - phoneNumber:", phoneNumber, "msg:", msg);
+
+  // Check if already processing a message for this phone number
+  const lockAcquired = await acquireProcessingLock(phoneNumber);
+  if (!lockAcquired) {
+    console.log("[receiveMessage] Already processing for", phoneNumber, "- sending wait message");
+    await sendSMS(phoneNumber, "Still working on your previous request, one moment...");
+    return;
+  }
 
   try {
     // Get or create conversation state from database
@@ -384,29 +378,6 @@ export async function receiveMessage(
                 is_error: true
               });
             }
-          } else if (toolUse.name === "send_message") {
-            const input = toolUse.input as { message: string };
-
-            try {
-              console.log("[receiveMessage] Sending message via send_message tool...");
-              console.log("[receiveMessage] Message content:", input.message.substring(0, 100) + (input.message.length > 100 ? "..." : ""));
-              await sendSMS(phoneNumber, input.message);
-              console.log("[receiveMessage] Message sent successfully");
-
-              toolResults.push({
-                type: "tool_result",
-                tool_use_id: toolUse.id,
-                content: "Message sent successfully"
-              });
-            } catch (error) {
-              console.error("[receiveMessage] send_message error:", error);
-              toolResults.push({
-                type: "tool_result",
-                tool_use_id: toolUse.id,
-                content: `Failed to send message: ${error instanceof Error ? error.message : "Unknown error"}`,
-                is_error: true
-              });
-            }
           } else {
             console.warn("[receiveMessage] Unknown tool requested:", toolUse.name);
           }
@@ -467,6 +438,9 @@ export async function receiveMessage(
     } catch (smsError) {
       console.error("[receiveMessage] Failed to send error SMS:", smsError);
     }
+  } finally {
+    // Always release the lock
+    await releaseProcessingLock(phoneNumber);
   }
 }
 

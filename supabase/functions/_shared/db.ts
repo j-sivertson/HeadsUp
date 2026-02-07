@@ -227,6 +227,46 @@ export async function deleteConversation(phoneNumber: string): Promise<void> {
   }
 }
 
+// Acquire a processing lock for a phone number
+// Returns true if lock acquired, false if already locked
+export async function acquireProcessingLock(phoneNumber: string): Promise<boolean> {
+  const supabase = getSupabase();
+
+  // Try to insert a lock row - will fail if one already exists (unique constraint)
+  const { error } = await supabase
+    .from("processing_locks")
+    .insert({ phone_number: phoneNumber });
+
+  if (error) {
+    // Check if it's a duplicate (already locked)
+    if (error.code === "23505") {
+      console.log("[db] Lock already held for", phoneNumber);
+      return false;
+    }
+    console.error("[db] acquireProcessingLock error:", error);
+    return false;
+  }
+
+  console.log("[db] Lock acquired for", phoneNumber);
+  return true;
+}
+
+// Release the processing lock for a phone number
+export async function releaseProcessingLock(phoneNumber: string): Promise<void> {
+  const supabase = getSupabase();
+
+  const { error } = await supabase
+    .from("processing_locks")
+    .delete()
+    .eq("phone_number", phoneNumber);
+
+  if (error) {
+    console.error("[db] releaseProcessingLock error:", error);
+  } else {
+    console.log("[db] Lock released for", phoneNumber);
+  }
+}
+
 // Start a new session for a user (used when starting a new research topic)
 export async function startNewSession(phoneNumber: string): Promise<ConversationData> {
   const supabase = getSupabase();
