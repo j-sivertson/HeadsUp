@@ -42,5 +42,6 @@ enable_signup = true
 double_confirm_changes = true
 enable_confirmations = false
 
-[functions]
-# Configure edge function settings here
+[functions.sms-agent]
+# Disable JWT verification for webhook endpoint (uses Surge signature validation instead)
+verify_jwt = false

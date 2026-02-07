@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
-import { processIncomingMessage } from "@/lib/research";
+import { receiveMessage } from "@/lib/agent";
 
 // ─── Types for Surge Webhook Payload ─────────────────────────────────────────
 
@@ -123,12 +123,10 @@ export async function POST(request: NextRequest) {
 
     // Process the message asynchronously (don't block the webhook response)
     // Surge expects a quick 200 response
-    processIncomingMessage({
-      body: data.body,
-      senderPhone: data.conversation.contact.phone_number,
-      senderFirstName: data.conversation.contact.first_name,
-      senderLastName: data.conversation.contact.last_name,
-    }).catch((error) => {
+    receiveMessage(
+      data.conversation.contact.phone_number,
+      data.body
+    ).catch((error) => {
       console.error("[HeadsUp] Error processing message:", error);
     });
 
