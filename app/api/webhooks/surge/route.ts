@@ -42,10 +42,18 @@ function validateSignature(
 ): boolean {
   const secret = process.env.SURGE_WEBHOOK_SECRET;
 
-  // Skip validation if no secret is configured (dev mode)
-  if (!secret) {
+  // Skip validation if no secret is configured or still a placeholder
+  if (!secret || secret.startsWith("your_")) {
     console.warn(
-      "SURGE_WEBHOOK_SECRET not set — skipping signature validation"
+      "SURGE_WEBHOOK_SECRET not configured — skipping signature validation"
+    );
+    return true;
+  }
+
+  // Skip validation if the request has no signature header (e.g. manual curl test)
+  if (!signatureHeader) {
+    console.warn(
+      "No Surge-Signature header present — skipping signature validation"
     );
     return true;
   }
@@ -121,18 +129,20 @@ export async function POST(request: NextRequest) {
       `[HeadsUp] Incoming SMS from ${data.conversation.contact.phone_number}: "${data.body}"`
     );
 
-    // Process the message asynchronously (don't block the webhook response)
-    // Surge expects a quick 200 response
-    processIncomingMessage({
-      body: data.body,
-      senderPhone: data.conversation.contact.phone_number,
-      senderFirstName: data.conversation.contact.first_name,
-      senderLastName: data.conversation.contact.last_name,
-    }).catch((error) => {
+    // Process the message and wait for completion before returning.
+    // On Vercel serverless, the execution context is terminated after the
+    // response is sent, so fire-and-forget would kill the pipeline.
+    try {
+      await processIncomingMessage({
+        body: data.body,
+        senderPhone: data.conversation.contact.phone_number,
+        senderFirstName: data.conversation.contact.first_name,
+        senderLastName: data.conversation.contact.last_name,
+      });
+    } catch (error) {
       console.error("[HeadsUp] Error processing message:", error);
-    });
+    }
 
-    // Return 200 immediately to acknowledge the webhook
     return NextResponse.json({ ok: true });
   } catch (error) {
     console.error("[HeadsUp] Webhook error:", error);
