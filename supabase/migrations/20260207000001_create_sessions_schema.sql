@@ -36,6 +36,12 @@ CREATE INDEX idx_sessions_status ON sessions(user_id, status);
 CREATE INDEX idx_messages_session ON messages(session_id);
 CREATE INDEX idx_messages_created ON messages(session_id, created_at);
 
+-- Processing locks to prevent concurrent message handling per phone number
+CREATE TABLE processing_locks (
+  phone_number TEXT PRIMARY KEY,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
 -- Auto-update updated_at on sessions
 CREATE OR REPLACE FUNCTION update_updated_at()
 RETURNS TRIGGER AS $$
