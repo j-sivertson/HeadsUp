@@ -17,6 +17,8 @@ console.log(`SURGE_ACCOUNT_ID: ${SURGE_ACCOUNT_ID ? "SET" : "MISSING"}`);
 console.log(`SURGE_SIGNING_SECRET: ${SURGE_SIGNING_SECRET ? "SET" : "MISSING"}`);
 console.log(`ANTHROPIC_API_KEY: ${Deno.env.get("ANTHROPIC_API_KEY") ? "SET" : "MISSING"}`);
 console.log(`TAVILY_API_KEY: ${Deno.env.get("TAVILY_API_KEY") ? "SET" : "MISSING"}`);
+console.log(`SUPABASE_URL: ${Deno.env.get("SUPABASE_URL") ? "SET" : "MISSING"}`);
+console.log(`SUPABASE_SERVICE_ROLE_KEY: ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ? "SET" : "MISSING"}`);
 console.log("=========================");
 
 // Types for Surge webhook payload
