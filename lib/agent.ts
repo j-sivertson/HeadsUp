@@ -3,7 +3,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { searchPerson, PersonQuery, SearchResult } from "@/lib/tavily";
 // Your teammate implements this
-import { sendMessage } from "@/lib/sms";
+import { sendSMS } from "./surge";
 
 const client = new Anthropic();
 
@@ -148,12 +148,12 @@ export async function receiveMessage(phoneNumber: string, msg: string): Promise<
                 state.messages.push({ role: "assistant", content: response.content });
 
                 // Send the response to the user
-                await sendMessage(phoneNumber, responseText);
+                await sendSMS(phoneNumber, responseText);
             }
         }
     } catch (error) {
         console.error("Error in receiveMessage:", error);
-        await sendMessage(phoneNumber, "Sorry, something went wrong. Please try again.");
+        await sendSMS(phoneNumber, "Sorry, something went wrong. Please try again.");
     }
 }
 
