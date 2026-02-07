@@ -3,12 +3,21 @@
 // Deploy with: supabase functions deploy sms-agent
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { receiveMessage } from "../_shared/agent.ts";
 
 // Environment variables
 const SURGE_API_TOKEN = Deno.env.get("SURGE_API_TOKEN") || Deno.env.get("SURGE_API_KEY")!;
 const SURGE_ACCOUNT_ID = Deno.env.get("SURGE_ACCOUNT_ID")!;
-const SURGE_PHONE_NUMBER = Deno.env.get("SURGE_PHONE_NUMBER")!;
 const SURGE_SIGNING_SECRET = Deno.env.get("SURGE_SIGNING_SECRET");
+
+// Log environment variable status at startup
+console.log("=== ENVIRONMENT CHECK ===");
+console.log(`SURGE_API_TOKEN: ${SURGE_API_TOKEN ? "SET" : "MISSING"}`);
+console.log(`SURGE_ACCOUNT_ID: ${SURGE_ACCOUNT_ID ? "SET" : "MISSING"}`);
+console.log(`SURGE_SIGNING_SECRET: ${SURGE_SIGNING_SECRET ? "SET" : "MISSING"}`);
+console.log(`ANTHROPIC_API_KEY: ${Deno.env.get("ANTHROPIC_API_KEY") ? "SET" : "MISSING"}`);
+console.log(`TAVILY_API_KEY: ${Deno.env.get("TAVILY_API_KEY") ? "SET" : "MISSING"}`);
+console.log("=========================");
 
 // Types for Surge webhook payload
 interface SurgeWebhookPayload {
@@ -86,36 +95,58 @@ async function validateWebhookSignature(
 // Send SMS via Surge API
 async function sendSMS(to: string, message: string): Promise<void> {
   console.log("=== SENDING SMS ===");
-  console.log(`To: ${to}`);
-  console.log(`Message: ${message}`);
+  console.log(`[sendSMS] To: ${to}`);
+  console.log(`[sendSMS] Message length: ${message.length}`);
+  console.log(`[sendSMS] Message: ${message}`);
+  console.log(`[sendSMS] SURGE_ACCOUNT_ID: ${SURGE_ACCOUNT_ID ? "SET" : "MISSING"}`);
+  console.log(`[sendSMS] SURGE_API_TOKEN: ${SURGE_API_TOKEN ? "SET" : "MISSING"}`);
 
-  const response = await fetch(
-    `https://api.surge.app/accounts/${SURGE_ACCOUNT_ID}/messages`,
-    {
+  const url = `https://api.surge.app/accounts/${SURGE_ACCOUNT_ID}/messages`;
+  console.log(`[sendSMS] URL: ${url}`);
+
+  const requestBody = {
+    body: message,
+    conversation: {
+      contact: {
+        phone_number: to,
+      },
+    },
+  };
+  console.log(`[sendSMS] Request body:`, JSON.stringify(requestBody));
+
+  try {
+    const response = await fetch(url, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${SURGE_API_TOKEN}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        body: message,
-        conversation: {
-          contact: {
-            phone_number: to,
-          },
-        },
-      }),
+      body: JSON.stringify(requestBody),
+    });
+
+    console.log(`[sendSMS] Response status: ${response.status} ${response.statusText}`);
+
+    const responseText = await response.text();
+    console.log(`[sendSMS] Response body: ${responseText}`);
+
+    if (!response.ok) {
+      let errorMessage = response.statusText;
+      try {
+        const errorJson = JSON.parse(responseText);
+        errorMessage = errorJson.error?.message || errorMessage;
+      } catch {
+        // Response wasn't JSON
+      }
+      throw new Error(`Failed to send SMS: ${errorMessage}`);
     }
-  );
 
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(`Failed to send SMS: ${error.error?.message || response.statusText}`);
+    const result = JSON.parse(responseText);
+    console.log("[sendSMS] SMS sent successfully, id:", result.id);
+    console.log("====================");
+  } catch (error) {
+    console.error("[sendSMS] Error:", error);
+    throw error;
   }
-
-  const result = await response.json();
-  console.log("SMS sent successfully:", result.id);
-  console.log("====================");
 }
 
 serve(async (req) => {
@@ -185,12 +216,8 @@ serve(async (req) => {
     console.log(`Message: ${messageBody}`);
     console.log("========================");
 
-    // TODO: Add your agent processing logic here
-    // For now, just echo back the message
-    const responseMessage = `Echo: ${messageBody}`;
-
-    // Send response (stubbed for now)
-    await sendSMS(senderPhone, responseMessage);
+    // Process the message with the Claude agent
+    await receiveMessage(senderPhone, messageBody, sendSMS);
 
     return new Response(
       JSON.stringify({
