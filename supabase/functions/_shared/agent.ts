@@ -424,7 +424,8 @@ export async function receiveMessage(
         const responseText = response.content
           .filter((block): block is Anthropic.TextBlock => block.type === "text")
           .map(block => block.text)
-          .join("\n");
+          .join("\n")
+          .trim();
 
         console.log("[receiveMessage] Response text length:", responseText.length);
         console.log("[receiveMessage] Response text preview:", responseText.substring(0, 200) + (responseText.length > 200 ? "..." : ""));
@@ -432,10 +433,15 @@ export async function receiveMessage(
         // Add assistant response to history
         state.messages.push({ role: "assistant", content: response.content });
 
-        // Send the response to the user
-        console.log("[receiveMessage] Sending SMS response...");
-        await sendSMS(phoneNumber, responseText);
-        console.log("[receiveMessage] SMS sent successfully");
+        // Only send SMS if there's actual text content
+        // (Claude may have already sent messages via the send_message tool)
+        if (responseText.length > 0) {
+          console.log("[receiveMessage] Sending SMS response...");
+          await sendSMS(phoneNumber, responseText);
+          console.log("[receiveMessage] SMS sent successfully");
+        } else {
+          console.log("[receiveMessage] No text content to send (messages may have been sent via send_message tool)");
+        }
       }
     }
 
