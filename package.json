@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test:connections": "node scripts/test-connections.js"
+    "test:connections": "node scripts/test-connections.js",
+    "test:agent": "node scripts/test-agent-send-message.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.74.0",

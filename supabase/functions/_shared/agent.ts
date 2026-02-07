@@ -52,6 +52,20 @@ const tools: Anthropic.Tool[] = [
       },
       required: ["name"]
     }
+  },
+  {
+    name: "send_message",
+    description: "Send an SMS message to the user. Use this to provide updates, ask follow-up questions, or deliver information to the user during the conversation.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        message: {
+          type: "string",
+          description: "The message text to send to the user"
+        }
+      },
+      required: ["message"]
+    }
   }
 ];
 
@@ -169,6 +183,29 @@ export async function receiveMessage(
                 type: "tool_result",
                 tool_use_id: toolUse.id,
                 content: `Search failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+                is_error: true
+              });
+            }
+          } else if (toolUse.name === "send_message") {
+            const input = toolUse.input as { message: string };
+
+            try {
+              console.log("[receiveMessage] Sending message via send_message tool...");
+              console.log("[receiveMessage] Message content:", input.message.substring(0, 100) + (input.message.length > 100 ? "..." : ""));
+              await sendSMS(phoneNumber, input.message);
+              console.log("[receiveMessage] Message sent successfully");
+
+              toolResults.push({
+                type: "tool_result",
+                tool_use_id: toolUse.id,
+                content: "Message sent successfully"
+              });
+            } catch (error) {
+              console.error("[receiveMessage] send_message error:", error);
+              toolResults.push({
+                type: "tool_result",
+                tool_use_id: toolUse.id,
+                content: `Failed to send message: ${error instanceof Error ? error.message : "Unknown error"}`,
                 is_error: true
               });
             }
