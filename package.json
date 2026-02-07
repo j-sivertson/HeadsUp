@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test:connections": "node scripts/test-connections.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.74.0",
@@ -15,7 +16,12 @@
     "@tavily/core": "^0.7.1",
     "@types/pg": "^8.16.0",
     "next": "^14.2.5",
+<<<<<<< HEAD
     "pg": "^8.18.0",
+=======
+    "@supabase/supabase-js": "^2.95.3",
+    "next": "^14.2.5",
+>>>>>>> 783ec39599fbc9a441b456eb43fda09fd8cde30b
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
