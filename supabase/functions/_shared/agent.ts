@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { searchPerson, PersonQuery, SearchResult } from "./tavily.ts";
-import { getConversation, saveConversation, startNewSession, ConversationData } from "./db.ts";
+import { getConversation, saveConversation, startNewSession, acquireProcessingLock, releaseProcessingLock, ConversationData } from "./db.ts";
 
 // Lazy singleton for Anthropic client
 let _client: Anthropic | null = null;
@@ -266,6 +266,14 @@ export async function receiveMessage(
 ): Promise<void> {
   console.log("[receiveMessage] START - phoneNumber:", phoneNumber, "msg:", msg);
 
+  // Check if already processing a message for this phone number
+  const lockAcquired = await acquireProcessingLock(phoneNumber);
+  if (!lockAcquired) {
+    console.log("[receiveMessage] Already processing for", phoneNumber, "- sending wait message");
+    await sendSMS(phoneNumber, "Still working on your previous request, one moment...");
+    return;
+  }
+
   try {
     // Get or create conversation state from database
     let conversationData = await getConversation(phoneNumber);
@@ -467,6 +475,9 @@ export async function receiveMessage(
     } catch (smsError) {
       console.error("[receiveMessage] Failed to send error SMS:", smsError);
     }
+  } finally {
+    // Always release the lock
+    await releaseProcessingLock(phoneNumber);
   }
 }
 
