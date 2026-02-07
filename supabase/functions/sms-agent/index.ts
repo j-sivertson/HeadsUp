@@ -14,14 +14,40 @@ const SURGE_SIGNING_SECRET = Deno.env.get("SURGE_SIGNING_SECRET");
 const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY")!;
 const TAVILY_API_KEY = Deno.env.get("TAVILY_API_KEY")!;
 
-// Initialize clients
-const anthropicClient = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
+// Log environment variable status at startup
+console.log("=== ENVIRONMENT CHECK ===");
+console.log(`SURGE_API_TOKEN: ${SURGE_API_TOKEN ? "SET" : "MISSING"}`);
+console.log(`SURGE_ACCOUNT_ID: ${SURGE_ACCOUNT_ID ? "SET" : "MISSING"}`);
+console.log(`SURGE_PHONE_NUMBER: ${SURGE_PHONE_NUMBER ? "SET" : "MISSING"}`);
+console.log(`SURGE_SIGNING_SECRET: ${SURGE_SIGNING_SECRET ? "SET" : "MISSING"}`);
+console.log(`ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY ? "SET (length: " + ANTHROPIC_API_KEY.length + ")" : "MISSING"}`);
+console.log(`TAVILY_API_KEY: ${TAVILY_API_KEY ? "SET (length: " + TAVILY_API_KEY.length + ")" : "MISSING"}`);
+console.log("=========================");
+
+// Initialize clients lazily to avoid startup errors
+let _anthropicClient: Anthropic | null = null;
+function getAnthropicClient(): Anthropic {
+  if (!_anthropicClient) {
+    console.log("[Anthropic] Initializing client...");
+    if (!ANTHROPIC_API_KEY) {
+      throw new Error("ANTHROPIC_API_KEY is not set");
+    }
+    _anthropicClient = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
+    console.log("[Anthropic] Client initialized successfully");
+  }
+  return _anthropicClient;
+}
 
 // Lazy Tavily client
 let _tavilyClient: TavilyClient | null = null;
 function getTavilyClient(): TavilyClient {
   if (!_tavilyClient) {
+    console.log("[Tavily] Initializing client...");
+    if (!TAVILY_API_KEY) {
+      throw new Error("TAVILY_API_KEY is not set");
+    }
     _tavilyClient = tavily({ apiKey: TAVILY_API_KEY });
+    console.log("[Tavily] Client initialized successfully");
   }
   return _tavilyClient;
 }
@@ -106,29 +132,39 @@ function buildSearchQuery(person: PersonQuery): string {
 // Search for a person using Tavily
 async function searchPerson(person: PersonQuery): Promise<SearchResult[]> {
   const query = buildSearchQuery(person);
+  console.log("[searchPerson] Built query:", query);
 
-  const response = await getTavilyClient().search(query, {
-    maxResults: 10,
-    searchDepth: "advanced",
-    includeAnswer: true,
-  });
-
-  const results: SearchResult[] = response.results.map((r) => ({
-    title: r.title,
-    url: r.url,
-    content: r.content,
-  }));
-
-  // If Tavily provided an answer summary, include it as the first result
-  if (response.answer) {
-    results.unshift({
-      title: "Tavily Summary",
-      url: "",
-      content: response.answer,
+  try {
+    console.log("[searchPerson] Calling Tavily API...");
+    const response = await getTavilyClient().search(query, {
+      maxResults: 10,
+      searchDepth: "advanced",
+      includeAnswer: true,
     });
-  }
+    console.log("[searchPerson] Tavily returned", response.results?.length || 0, "results");
 
-  return results;
+    const results: SearchResult[] = response.results.map((r) => ({
+      title: r.title,
+      url: r.url,
+      content: r.content,
+    }));
+
+    // If Tavily provided an answer summary, include it as the first result
+    if (response.answer) {
+      console.log("[searchPerson] Tavily provided answer summary");
+      results.unshift({
+        title: "Tavily Summary",
+        url: "",
+        content: response.answer,
+      });
+    }
+
+    console.log("[searchPerson] Returning", results.length, "total results");
+    return results;
+  } catch (error) {
+    console.error("[searchPerson] Tavily API error:", error);
+    throw error;
+  }
 }
 
 // Format search results for Claude
@@ -140,22 +176,36 @@ function formatSearchResults(results: SearchResult[]): string {
 
 // Process incoming message with Claude agentic loop
 async function receiveMessage(phoneNumber: string, msg: string): Promise<void> {
+  console.log("[receiveMessage] START - phoneNumber:", phoneNumber, "msg:", msg);
+
   try {
     // Get or create conversation state
     let state = conversations.get(phoneNumber);
     if (!state) {
+      console.log("[receiveMessage] Creating new conversation state for", phoneNumber);
       state = { messages: [], personInfo: {} };
       conversations.set(phoneNumber, state);
+    } else {
+      console.log("[receiveMessage] Found existing conversation with", state.messages.length, "messages");
     }
 
     // Add user message to history
     state.messages.push({ role: "user", content: msg });
+    console.log("[receiveMessage] Added user message, total messages:", state.messages.length);
 
     // Agentic loop
     let continueLoop = true;
+    let loopCount = 0;
+    const maxLoops = 10; // Safety limit
 
-    while (continueLoop) {
-      const response = await anthropicClient.messages.create({
+    while (continueLoop && loopCount < maxLoops) {
+      loopCount++;
+      console.log("[receiveMessage] Agentic loop iteration", loopCount);
+
+      console.log("[receiveMessage] Calling Claude API...");
+      const client = getAnthropicClient();
+
+      const response = await client.messages.create({
         model: "claude-sonnet-4-20250514",
         max_tokens: 1024,
         system: SYSTEM_PROMPT,
@@ -163,11 +213,17 @@ async function receiveMessage(phoneNumber: string, msg: string): Promise<void> {
         messages: state.messages,
       });
 
+      console.log("[receiveMessage] Claude response received");
+      console.log("[receiveMessage] Stop reason:", response.stop_reason);
+      console.log("[receiveMessage] Content blocks:", response.content.length);
+      console.log("[receiveMessage] Usage - input:", response.usage?.input_tokens, "output:", response.usage?.output_tokens);
+
       // Check if Claude wants to use a tool
       if (response.stop_reason === "tool_use") {
         const toolUseBlocks = response.content.filter(
           (block): block is Anthropic.ToolUseBlock => block.type === "tool_use"
         );
+        console.log("[receiveMessage] Tool use requested:", toolUseBlocks.length, "tools");
 
         // Add Claude's response to messages
         state.messages.push({ role: "assistant", content: response.content });
@@ -176,16 +232,21 @@ async function receiveMessage(phoneNumber: string, msg: string): Promise<void> {
         const toolResults: Anthropic.ToolResultBlockParam[] = [];
 
         for (const toolUse of toolUseBlocks) {
+          console.log("[receiveMessage] Processing tool:", toolUse.name, "id:", toolUse.id);
+          console.log("[receiveMessage] Tool input:", JSON.stringify(toolUse.input));
+
           if (toolUse.name === "search_person") {
             const input = toolUse.input as PersonQuery;
 
             try {
+              console.log("[receiveMessage] Calling searchPerson...");
               const searchResults = await searchPerson({
                 name: input.name,
                 company: input.company,
                 role: input.role,
                 location: input.location,
               });
+              console.log("[receiveMessage] searchPerson returned", searchResults.length, "results");
 
               toolResults.push({
                 type: "tool_result",
@@ -193,6 +254,7 @@ async function receiveMessage(phoneNumber: string, msg: string): Promise<void> {
                 content: formatSearchResults(searchResults)
               });
             } catch (error) {
+              console.error("[receiveMessage] searchPerson error:", error);
               toolResults.push({
                 type: "tool_result",
                 tool_use_id: toolUse.id,
@@ -200,31 +262,55 @@ async function receiveMessage(phoneNumber: string, msg: string): Promise<void> {
                 is_error: true
               });
             }
+          } else {
+            console.warn("[receiveMessage] Unknown tool requested:", toolUse.name);
           }
         }
 
         // Add tool results to messages
         state.messages.push({ role: "user", content: toolResults });
+        console.log("[receiveMessage] Added tool results to messages");
 
       } else {
         // Claude gave a final text response
         continueLoop = false;
+        console.log("[receiveMessage] Final response from Claude (stop_reason:", response.stop_reason + ")");
 
         const responseText = response.content
           .filter((block): block is Anthropic.TextBlock => block.type === "text")
           .map(block => block.text)
           .join("\n");
 
+        console.log("[receiveMessage] Response text length:", responseText.length);
+        console.log("[receiveMessage] Response text preview:", responseText.substring(0, 200) + (responseText.length > 200 ? "..." : ""));
+
         // Add assistant response to history
         state.messages.push({ role: "assistant", content: response.content });
 
         // Send the response to the user
+        console.log("[receiveMessage] Sending SMS response...");
         await sendSMS(phoneNumber, responseText);
+        console.log("[receiveMessage] SMS sent successfully");
       }
     }
+
+    if (loopCount >= maxLoops) {
+      console.error("[receiveMessage] Hit max loop limit!");
+    }
+
+    console.log("[receiveMessage] END - completed successfully");
   } catch (error) {
-    console.error("Error in receiveMessage:", error);
-    await sendSMS(phoneNumber, "Sorry, something went wrong. Please try again.");
+    console.error("[receiveMessage] FATAL ERROR:", error);
+    console.error("[receiveMessage] Error name:", error instanceof Error ? error.name : "unknown");
+    console.error("[receiveMessage] Error message:", error instanceof Error ? error.message : String(error));
+    console.error("[receiveMessage] Error stack:", error instanceof Error ? error.stack : "no stack");
+
+    try {
+      await sendSMS(phoneNumber, "Sorry, something went wrong. Please try again.");
+      console.log("[receiveMessage] Error SMS sent to user");
+    } catch (smsError) {
+      console.error("[receiveMessage] Failed to send error SMS:", smsError);
+    }
   }
 }
 
@@ -304,36 +390,58 @@ async function validateWebhookSignature(
 // Send SMS via Surge API
 async function sendSMS(to: string, message: string): Promise<void> {
   console.log("=== SENDING SMS ===");
-  console.log(`To: ${to}`);
-  console.log(`Message: ${message}`);
+  console.log(`[sendSMS] To: ${to}`);
+  console.log(`[sendSMS] Message length: ${message.length}`);
+  console.log(`[sendSMS] Message: ${message}`);
+  console.log(`[sendSMS] SURGE_ACCOUNT_ID: ${SURGE_ACCOUNT_ID ? "SET" : "MISSING"}`);
+  console.log(`[sendSMS] SURGE_API_TOKEN: ${SURGE_API_TOKEN ? "SET" : "MISSING"}`);
 
-  const response = await fetch(
-    `https://api.surge.app/accounts/${SURGE_ACCOUNT_ID}/messages`,
-    {
+  const url = `https://api.surge.app/accounts/${SURGE_ACCOUNT_ID}/messages`;
+  console.log(`[sendSMS] URL: ${url}`);
+
+  const requestBody = {
+    body: message,
+    conversation: {
+      contact: {
+        phone_number: to,
+      },
+    },
+  };
+  console.log(`[sendSMS] Request body:`, JSON.stringify(requestBody));
+
+  try {
+    const response = await fetch(url, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${SURGE_API_TOKEN}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        body: message,
-        conversation: {
-          contact: {
-            phone_number: to,
-          },
-        },
-      }),
+      body: JSON.stringify(requestBody),
+    });
+
+    console.log(`[sendSMS] Response status: ${response.status} ${response.statusText}`);
+
+    const responseText = await response.text();
+    console.log(`[sendSMS] Response body: ${responseText}`);
+
+    if (!response.ok) {
+      let errorMessage = response.statusText;
+      try {
+        const errorJson = JSON.parse(responseText);
+        errorMessage = errorJson.error?.message || errorMessage;
+      } catch {
+        // Response wasn't JSON
+      }
+      throw new Error(`Failed to send SMS: ${errorMessage}`);
     }
-  );
 
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(`Failed to send SMS: ${error.error?.message || response.statusText}`);
+    const result = JSON.parse(responseText);
+    console.log("[sendSMS] SMS sent successfully, id:", result.id);
+    console.log("====================");
+  } catch (error) {
+    console.error("[sendSMS] Error:", error);
+    throw error;
   }
-
-  const result = await response.json();
-  console.log("SMS sent successfully:", result.id);
-  console.log("====================");
 }
 
 serve(async (req) => {
