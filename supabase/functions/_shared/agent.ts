@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { searchPerson, PersonQuery, SearchResult } from "./tavily.ts";
+import { getConversation, saveConversation, startNewSession, ConversationData } from "./db.ts";
 
 // Lazy singleton for Anthropic client
 let _client: Anthropic | null = null;
@@ -17,13 +18,11 @@ function getClient(): Anthropic {
   return _client;
 }
 
-// Store conversation state per phone number
+// Conversation state interface
 interface ConversationState {
   messages: Anthropic.MessageParam[];
   personInfo: Partial<PersonQuery>;
 }
-
-const conversations = new Map<string, ConversationState>();
 
 // Tool definition for Claude
 const tools: Anthropic.Tool[] = [
@@ -167,21 +166,26 @@ export async function receiveMessage(
   console.log("[receiveMessage] START - phoneNumber:", phoneNumber, "msg:", msg);
 
   try {
-    // Get or create conversation state
-    let state = conversations.get(phoneNumber);
-    if (!state) {
+    // Get or create conversation state from database
+    let conversationData = await getConversation(phoneNumber);
+    let state: ConversationState;
+
+    if (!conversationData) {
       console.log("[receiveMessage] Creating new conversation state for", phoneNumber);
       state = { messages: [], personInfo: {} };
-      conversations.set(phoneNumber, state);
     } else {
-      console.log("[receiveMessage] Found existing conversation with", state.messages.length, "messages");
+      console.log("[receiveMessage] Found existing conversation with", conversationData.messages.length, "messages");
+      state = {
+        messages: conversationData.messages as Anthropic.MessageParam[],
+        personInfo: conversationData.personInfo as Partial<PersonQuery>,
+      };
     }
 
     // Check if this is a new conversation
     if (await isNewConversation(msg, state.messages)) {
       console.log("[receiveMessage] New conversation detected, clearing history");
+      await startNewSession(phoneNumber);
       state = { messages: [], personInfo: {} };
-      conversations.set(phoneNumber, state);
     }
 
     // Add user message to history
@@ -316,6 +320,11 @@ export async function receiveMessage(
       console.error("[receiveMessage] Hit max loop limit!");
     }
 
+    // Save conversation state to database
+    console.log("[receiveMessage] Saving conversation to database...");
+    await saveConversation(phoneNumber, state.messages, state.personInfo);
+    console.log("[receiveMessage] Conversation saved");
+
     console.log("[receiveMessage] END - completed successfully");
   } catch (error) {
     console.error("[receiveMessage] FATAL ERROR:", error);
@@ -333,6 +342,6 @@ export async function receiveMessage(
 }
 
 // Clear conversation history for a phone number (useful for "start over")
-export function clearConversation(phoneNumber: string): void {
-  conversations.delete(phoneNumber);
+export async function clearConversation(phoneNumber: string): Promise<void> {
+  await startNewSession(phoneNumber);
 }
