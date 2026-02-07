@@ -69,6 +69,66 @@ function formatSearchResults(results: SearchResult[]): string {
         .join("\n\n");
 }
 
+// Check if this message starts a new conversation
+async function isNewConversation(
+    newMessage: string,
+    existingMessages: Anthropic.MessageParam[]
+): Promise<boolean> {
+    // No existing conversation = definitely new
+    if (existingMessages.length === 0) {
+        return false; // No need to clear, nothing exists
+    }
+
+    // Check for explicit reset keywords
+    const resetKeywords = ["start over", "new search", "reset", "new person", "different person"];
+    if (resetKeywords.some(keyword => newMessage.toLowerCase().includes(keyword))) {
+        return true;
+    }
+
+    // Ask Claude to determine if this is a new conversation
+    const response = await client.messages.create({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 10,
+        system: `You determine if a new message is starting a fresh conversation or continuing an existing one.
+
+Respond with only "NEW" or "CONTINUE".
+
+Say "NEW" if:
+- The user is asking about a different person than before
+- The user seems to be starting a completely new request
+- The message doesn't relate to the previous conversation
+
+Say "CONTINUE" if:
+- The user is providing additional info about the same person
+- The user is answering a question you asked
+- The message is a follow-up to the previous conversation`,
+        messages: [
+            {
+                role: "user",
+                content: `Previous conversation:\n${summarizeConversation(existingMessages)}\n\nNew message: "${newMessage}"\n\nIs this NEW or CONTINUE?`
+            }
+        ]
+    });
+
+    const answer = response.content[0].type === "text" ? response.content[0].text.trim().toUpperCase() : "";
+    return answer === "NEW";
+}
+
+// Create a brief summary of existing conversation for context check
+function summarizeConversation(messages: Anthropic.MessageParam[]): string {
+    return messages
+        .slice(-4) // Only look at last 4 messages for context
+        .map(m => {
+            const content = typeof m.content === "string"
+                ? m.content
+                : Array.isArray(m.content)
+                    ? m.content.filter((b): b is Anthropic.TextBlock => typeof b === 'object' && 'type' in b && b.type === 'text').map(b => b.text).join(" ")
+                    : "";
+            return `${m.role}: ${content.slice(0, 100)}`;
+        })
+        .join("\n");
+}
+
 export async function receiveMessage(phoneNumber: string, msg: string): Promise<void> {
     try {
         // Ensure database is initialized
@@ -76,8 +136,16 @@ export async function receiveMessage(phoneNumber: string, msg: string): Promise<
 
         // Get or create conversation state from database
         const existingConvo = await getConversation(phoneNumber);
-        const messages: Anthropic.MessageParam[] = existingConvo?.messages || [];
-        const personInfo: Partial<PersonQuery> = existingConvo?.person_info || {};
+        let messages: Anthropic.MessageParam[] = existingConvo?.messages || [];
+        let personInfo: Partial<PersonQuery> = existingConvo?.person_info || {};
+
+        // Check if this is a new conversation
+        if (await isNewConversation(msg, messages)) {
+            // Clear old conversation and start fresh
+            await deleteConversation(phoneNumber);
+            messages = [];
+            personInfo = {};
+        }
 
         // Add user message to history
         messages.push({ role: "user", content: msg });
