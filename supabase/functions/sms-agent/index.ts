@@ -1,0 +1,218 @@
+// SMS Agent Edge Function
+// Receives webhooks from Surge API and processes incoming SMS messages
+// Deploy with: supabase functions deploy sms-agent
+
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+
+// Environment variables
+const SURGE_API_TOKEN = Deno.env.get("SURGE_API_TOKEN") || Deno.env.get("SURGE_API_KEY")!;
+const SURGE_ACCOUNT_ID = Deno.env.get("SURGE_ACCOUNT_ID")!;
+const SURGE_PHONE_NUMBER = Deno.env.get("SURGE_PHONE_NUMBER")!;
+const SURGE_SIGNING_SECRET = Deno.env.get("SURGE_SIGNING_SECRET");
+
+// Types for Surge webhook payload
+interface SurgeWebhookPayload {
+  type: string;
+  id: string;
+  data: {
+    id: string;
+    body: string;
+    conversation: {
+      id: string;
+      contact: {
+        id: string;
+        first_name?: string;
+        last_name?: string;
+        phone_number: string;
+      };
+      phone_number: string;
+    };
+    attachments: Array<{ id: string; type: string; url: string }>;
+    metadata: Record<string, string>;
+  };
+}
+
+// Validate Surge webhook signature using HMAC-SHA256
+async function validateWebhookSignature(
+  signatureHeader: string,
+  rawBody: string,
+  toleranceSeconds = 300
+): Promise<boolean> {
+  if (!SURGE_SIGNING_SECRET) {
+    console.warn("SURGE_SIGNING_SECRET not set - skipping signature validation");
+    return true; // Skip validation if secret not configured
+  }
+
+  const parts = signatureHeader.split(",");
+  const timestamp = parts.find((p) => p.startsWith("t="))?.slice(2);
+  const signatures = parts
+    .filter((p) => p.startsWith("v1="))
+    .map((p) => p.slice(3));
+
+  if (!timestamp || signatures.length === 0) {
+    console.error("Invalid signature header format");
+    return false;
+  }
+
+  // Check timestamp is within tolerance (prevent replay attacks)
+  const timestampNum = parseInt(timestamp, 10);
+  const now = Math.floor(Date.now() / 1000);
+  if (Math.abs(now - timestampNum) > toleranceSeconds) {
+    console.error("Webhook timestamp outside tolerance window");
+    return false;
+  }
+
+  // Compute HMAC-SHA256 using Web Crypto API
+  const encoder = new TextEncoder();
+  const keyData = encoder.encode(SURGE_SIGNING_SECRET);
+  const signedPayload = encoder.encode(`${timestamp}.${rawBody}`);
+
+  const key = await crypto.subtle.importKey(
+    "raw",
+    keyData,
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+
+  const signature = await crypto.subtle.sign("HMAC", key, signedPayload);
+  const expectedSignature = Array.from(new Uint8Array(signature))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+
+  return signatures.some((sig) => sig === expectedSignature);
+}
+
+// Send SMS via Surge API
+async function sendSMS(to: string, message: string): Promise<void> {
+  console.log("=== SENDING SMS ===");
+  console.log(`To: ${to}`);
+  console.log(`Message: ${message}`);
+
+  const response = await fetch(
+    `https://api.surge.app/accounts/${SURGE_ACCOUNT_ID}/messages`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${SURGE_API_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        body: message,
+        conversation: {
+          contact: {
+            phone_number: to,
+          },
+        },
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(`Failed to send SMS: ${error.error?.message || response.statusText}`);
+  }
+
+  const result = await response.json();
+  console.log("SMS sent successfully:", result.id);
+  console.log("====================");
+}
+
+serve(async (req) => {
+  // Log incoming request
+  console.log("=== INCOMING WEBHOOK ===");
+  console.log(`Method: ${req.method}`);
+  console.log(`URL: ${req.url}`);
+
+  // Handle CORS preflight
+  if (req.method === "OPTIONS") {
+    return new Response("ok", {
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Headers": "content-type, surge-signature",
+      },
+    });
+  }
+
+  try {
+    // Get raw body for signature validation
+    const rawBody = await req.text();
+    console.log("Raw body:", rawBody);
+
+    // Validate webhook signature
+    const signatureHeader = req.headers.get("Surge-Signature");
+    if (signatureHeader) {
+      const isValid = await validateWebhookSignature(signatureHeader, rawBody);
+      if (!isValid) {
+        console.error("Invalid webhook signature");
+        return new Response(JSON.stringify({ error: "Invalid signature" }), {
+          status: 401,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      console.log("Webhook signature validated");
+    } else {
+      console.warn("No Surge-Signature header present");
+    }
+
+    // Parse webhook payload
+    const payload: SurgeWebhookPayload = JSON.parse(rawBody);
+    console.log("Event type:", payload.type);
+    console.log("Event ID:", payload.id);
+
+    // Only process message.received events
+    if (payload.type !== "message.received") {
+      console.log(`Skipping event type: ${payload.type}`);
+      return new Response(JSON.stringify({ success: true, skipped: true }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    // Extract message details
+    const messageBody = payload.data.body;
+    const senderPhone = payload.data.conversation.contact.phone_number;
+    const conversationId = payload.data.conversation.id;
+    const contactName = [
+      payload.data.conversation.contact.first_name,
+      payload.data.conversation.contact.last_name,
+    ]
+      .filter(Boolean)
+      .join(" ") || "Unknown";
+
+    console.log("=== MESSAGE RECEIVED ===");
+    console.log(`From: ${senderPhone} (${contactName})`);
+    console.log(`Conversation ID: ${conversationId}`);
+    console.log(`Message: ${messageBody}`);
+    console.log("========================");
+
+    // TODO: Add your agent processing logic here
+    // For now, just echo back the message
+    const responseMessage = `Echo: ${messageBody}`;
+
+    // Send response (stubbed for now)
+    await sendSMS(senderPhone, responseMessage);
+
+    return new Response(
+      JSON.stringify({
+        success: true,
+        received: {
+          from: senderPhone,
+          message: messageBody,
+          conversationId: conversationId,
+        },
+      }),
+      {
+        headers: { "Content-Type": "application/json" },
+      }
+    );
+  } catch (error) {
+    console.error("Error processing webhook:", error);
+    return new Response(
+      JSON.stringify({ error: error.message }),
+      {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      }
+    );
+  }
+});

@@ -6,12 +6,15 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test:connections": "node scripts/test-connections.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.74.0",
     "@surgeapi/node": "^0.35.0",
     "@tavily/core": "^0.7.1",
+    "next": "^14.2.5",
+    "@supabase/supabase-js": "^2.95.3",
     "next": "^14.2.5",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
